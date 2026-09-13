@@ -1,0 +1,109 @@
+name: Build fonts
+
+# Publishes to a SEPARATE repo (set as the OUTPUT_REPO variable below),
+# using a fine-grained PAT stored as the DEPLOY_REPO_TOKEN secret.
+# See README.md for one-time setup of both.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "google-fonts-families.txt"
+      - "manual-fonts/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - ".github/workflows/build-fonts.yml"
+  schedule:
+    # Weekly, so upstream fixes/additions to already-listed google/fonts
+    # families get picked up even if you haven't touched this repo.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      run_qa:
+        description: "Run fontbakery QA pass (slower, informational only, never blocks publishing)"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Sparse-checkout requested google/fonts families
+        run: |
+          set -euo pipefail
+          families=$(grep -vE '^\s*#|^\s*$' source/google-fonts-families.txt || true)
+          mkdir -p google-fonts-src
+          if [ -z "$families" ]; then
+            echo "No families listed in google-fonts-families.txt -- skipping google/fonts checkout."
+          else
+            git clone --filter=blob:none --no-checkout --depth 1 \
+              https://github.com/google/fonts.git google-fonts-src
+            cd google-fonts-src
+            git sparse-checkout init --cone
+            git sparse-checkout set $families
+            git checkout main
+            cd ..
+            echo "Checked out families:"
+            find google-fonts-src -mindepth 2 -maxdepth 2 -type d
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pipeline dependencies
+        run: pip install --break-system-packages -r source/requirements.txt
+
+      - name: Build woff2 files + manifest.json
+        run: |
+          python3 source/scripts/build.py \
+            --google-fonts-src google-fonts-src \
+            --manual-fonts-dir source/manual-fonts \
+            --output-dir output
+
+      - name: Optional QA pass (fontbakery)
+        if: ${{ inputs.run_qa == true }}
+        continue-on-error: true
+        run: |
+          pip install --break-system-packages fontbakery
+          find google-fonts-src -name '*.ttf' -print0 \
+            | xargs -0 fontbakery check-googlefonts --loglevel WARN || true
+          find source/manual-fonts -name '*.ttf' -print0 \
+            | xargs -0 -r fontbakery check-googlefonts --loglevel WARN || true
+
+      - name: Upload build output as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: font-repo-output
+          path: output/
+          retention-days: 7
+
+      - name: Checkout output repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.OUTPUT_REPO }}
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          path: output-repo
+
+      - name: Sync build output into output repo
+        run: rsync -a --delete --exclude='.git' output/ output-repo/
+
+      - name: Commit and push, if anything changed
+        working-directory: output-repo
+        run: |
+          set -euo pipefail
+          git config user.name "font-pipeline-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            git commit -m "Rebuild fonts ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push
+          fi

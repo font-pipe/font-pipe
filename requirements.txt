@@ -1,0 +1,5 @@
+fonttools>=4.62.1
+brotli>=1.2.0
+gfmetadata>=0.2.5
+gfsubsets>=2025.11.4
+gflanguages>=0.7.11

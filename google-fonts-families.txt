@@ -1,0 +1,10 @@
+# One google/fonts family path per line: <license-dir>/<family-folder>
+# (these are exactly the paths under https://github.com/google/fonts —
+# browse there to find the folder name for a family you want).
+#
+# Lines starting with # are ignored. Add/remove lines and re-run the
+# "Build fonts" workflow (or push this file) to change what's included.
+
+ofl/oswald
+ofl/roboto
+apache/chewy
